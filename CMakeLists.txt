@@ -36,5 +36,5 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE SOSIMPLE_BUILD)
 
 # example to test
 
-add_executable(${PROJECT_NAME}_example src/main.cpp)
-target_link_libraries(${PROJECT_NAME}_example ${PROJECT_NAME})
+# add_executable(${PROJECT_NAME}_example src/main.cpp)
+# target_link_libraries(${PROJECT_NAME}_example ${PROJECT_NAME})
