@@ -52,6 +52,24 @@ A utility similar in conecpt to an std::optional, where it can an can not have a
 Simple pollable watchdog class that invokes a callback when tripped.
 Call check() to test if it timed out, and reset() to reset the timeout.
 
+### Install
+
+```bash
+# default build, static library libsosimple.a
+./build.sh
+# OR shared library libsosimple.so
+./build.sh --cmake-args="-DBUILD_SHARED_LIBS=ON"
+
+# Note: build.sh will ask you to install build-essential (or distro equivalent) and python3 + venv if missing
+
+# since the build happens in a python venv, activate
+source venv/bin/activate
+# install
+cd build && sudo make install
+# deactivate python venv again
+deactivate
+```
+
 ### Examples
 
 ```c++
