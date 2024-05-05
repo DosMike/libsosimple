@@ -1,9 +1,9 @@
 # LibSoSimple
 
+This is the socket simple library that makes sockets so simple :)
+
 Trying to make UDP and TCP sockets as easy as possible, without having to care about POSIX sockets, but still giving you access.
 Creating a socket is done using one function call. Processing incoming connections, packets and errors is done with optionally async callbacks based in a worker thread that is managed for you.
-
-The name is a left over from a previous concept I wanted to use, but didn't bother with any further.
 
 ***Currently this library is Linux only because the Windows POSIX compatible API is not quite compatible***
 
