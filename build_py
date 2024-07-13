@@ -233,6 +233,7 @@ compiler=msvc
 compiler.cppstd=23
 compiler.version={compver}
 compiler.runtime=dynamic
+compiler.libcxx=libstdc++
 os=Windows
 
 [conf]
@@ -322,19 +323,23 @@ def build_run(*cmd, sub=None):
     flush()
 
 
-def build(plat, where, build_type, cmake_args):
+def build(plat, where, build_type, cmake_args, install):
     try:
-        if plat == 'windows':
+        # tool chain file requires full path for .py configurations over filename for .txt conanfiles
+        tc_file = Path('build') / build_type / 'generators' / 'conan_toolchain.cmake'
+        if install:
+            build_run("conan", "create", ".", "-s", "build_type="+build_type)
+        elif plat == 'windows':
             generator = cmake_generator_name_for_vs_version()
             if generator is None:
                 return False
 
             build_run("conan", "install", ".", "--profile", ".\\conanprofile.txt", f"--output-folder", str(where), "--build", "missing")
-            build_run("cmake", "..", "-G", generator, "-DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake", *cmake_args, sub=where)
+            build_run("cmake", "..", "-G", generator, "-DCMAKE_TOOLCHAIN_FILE="+str(tc_file), *cmake_args, sub=where)
             build_run("cmake", "--build", ".", "--config", build_type, sub=where)
         else:
             build_run("conan", "install", ".", "--profile", "./conanprofile.txt", f"--output-folder", str(where), "--build", "missing")
-            build_run("cmake", "..", "-DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake", "-DCMAKE_BUILD_TYPE="+build_type, *cmake_args, sub=where)
+            build_run("cmake", "..", "-DCMAKE_TOOLCHAIN_FILE="+str(tc_file), "-DCMAKE_BUILD_TYPE="+build_type, *cmake_args, sub=where)
             build_run("cmake", "--build", ".", sub=where)
         return True
     except:
@@ -409,7 +414,7 @@ def main(plat, args):
         return  # we just generated these files, there wont be anything to build
     
     print(" ====== Building Project ======")
-    if not build(plat, args.build_dir, args.build_type, args.cmake_args):
+    if not build(plat, args.build_dir, args.build_type, args.cmake_args, args.install):
         print("Build failed (see above)")
         exit(1)
 
@@ -427,7 +432,7 @@ if '__main__' == __name__:
         import winreg  # no bueno on linux
 
     # setup args
-    ap = argparse.ArgumentParser(prog='MyBCP', description='Cpp tool wrapper and loader for Windows', epilog='git url goes here', prefix_chars='-/')
+    ap = argparse.ArgumentParser(prog='MyBCP', description='Cpp tool wrapper and loader for Windows', epilog='https://github.com/DosMike/MyBCP/', prefix_chars='-/')
     ap.add_argument('--rebuild', action="store_true", dest="rebuild", help="Delete build directory and build clean")
     ap.add_argument('--cmake-args', action="extend", nargs="+", dest="cmake_args", default=[], help="Arguments to pass to cmake. These are appended at the end.")
     ap.add_argument('--vs-dir', type=Path, dest="compiler_path", help="Path to visual studio installation. If not specified, it is detected automatically")
@@ -435,6 +440,7 @@ if '__main__' == __name__:
     ap.add_argument('--devshell', action="store_true", help="Start a new command prompt in a complete dev environment. The venv is active and MSVC is discovered, so you can manage python packages load your IDE or whatever")
     ap.add_argument('--build-type', choices=["Release", "Debug"], dest="build_type", default="Release", help="Debug build type might enable debug symbols and other features")
     ap.add_argument('--update', action="store_true", dest="update", help="Update MyBCP from GitHub")
+    ap.add_argument('--install', action="store_true", dest="install", help="Install the package into the local conan cache (requires a conanfile.py)")
     args = ap.parse_args(sys.argv[1:])
     # additional validation
     try:

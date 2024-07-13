@@ -1,6 +1,0 @@
-[requires]
-# place your dependencies here. you can find packages at https://conan.io/center
-
-[generators]
-CMakeDeps
-CMakeToolchain

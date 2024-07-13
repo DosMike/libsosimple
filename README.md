@@ -54,6 +54,15 @@ Call check() to test if it timed out, and reset() to reset the timeout.
 
 ### Install
 
+* If you are using conan, you can install libsosimple into your local cache with
+
+```bash
+./build.sh --install
+# Add requirement to conanfile as "sosimple/1.0"
+```
+
+* You can also manually install libsosimple on system level
+
 ```bash
 # default build, static library libsosimple.a
 ./build.sh
