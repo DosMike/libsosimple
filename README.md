@@ -54,11 +54,24 @@ Call check() to test if it timed out, and reset() to reset the timeout.
 
 ### Install
 
-* If you are using conan, you can install libsosimple into your local cache with
+* If you are using conan+cmake, you can install libsosimple into your local cache with
 
 ```bash
 ./build.sh --install
 # Add requirement to conanfile as "sosimple/1.0"
+```
+
+```cmake
+# CMakeLists.txt
+...
+# for shared libs use `option(BUILD_SHARED_LIBS "Build shared libraries" ON)`
+find_package(sosimple REQUIRED)
+...
+target_link_libraries(${PROJECT_NAME} sosimple::sosimple)
+if(WIN32)
+    # for Windows you still have to link Winsock2
+    target_link_libraries(${PROJECT_NAME} Ws2_32)
+endif()
 ```
 
 * You can also manually install libsosimple on system level
