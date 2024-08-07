@@ -6,9 +6,24 @@ rem Also, we install conan/cmake through python, because that's way easier than 
 rem CodePage 65001 is UTF-8, IDK what you're doing but everything's kinda UTF-8, so switch
 chcp 65001
 setlocal
-where /Q python3
-if not ERRORLEVEL 1 goto run
 
+rem first detect if we use python3 or python (???)
+set pybin=python3
+where /Q python3
+if ERRORLEVEL 1 set pybin=python
+where /Q %pybin%
+rem none exist, install a version
+if ERRORLEVEL 1 goto py_install
+rem if python is "installed" in Microsoft\WindowsApps it's most likely that crappy app installer
+where %pybin% | find "\Microsoft\WindowsApps\" >NUL
+if ERRORLEVEL 1 goto run
+
+echo You have some Microsoft Crapware installed that replaces python with a Microsoft Store link.
+echo Please disable the App Installer for Python and Python3, then run again.
+echo (See Apps & Features -> App Execution aliases)
+goto end
+
+:py_install
 set "pyversion=3.12"
 echo  ====== Installing Python %pyversion% ======
 where /Q winget
@@ -65,7 +80,7 @@ rem Activate venv
 if exist venv_build (goto venv)
 echo  ====== Creating Python Virtual Environment ======
 echo    NOTE: Conan will cache packages in %HOMEDRIVE%%HOMEPATH%\.conan2 by default
-python3 -m venv venv_build
+%pybin% -m venv venv_build
 if ERRORLEVEL 1 (goto end)
 
 :venv
@@ -73,7 +88,7 @@ rem Run script in venv, passing all args
 cd %scriptdir%
 call venv_build\Scripts\activate
 cd %scriptdir%
-call python build_py %*
+call %pybin% build_py %*
 call deactivate
 
 :end

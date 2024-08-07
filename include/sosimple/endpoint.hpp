@@ -3,7 +3,7 @@
 
 #include "exports.hpp"
 
-#include "sosimple/netheaders.hpp"
+#include "sosimple/platforms.hpp"
 #include <cstring>
 
 namespace sosimple {

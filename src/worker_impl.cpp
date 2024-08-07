@@ -10,26 +10,28 @@ sosimple::WorkerImpl::think_impl() -> std::optional<std::chrono::time_point<std:
     auto zero = std::chrono::milliseconds(0);
     auto now = std::chrono::steady_clock::now();
     auto next = zero;
-    bool nextSet;
-
-    for (auto& desc : mTasks) {
-        if (desc.mPeriod == zero) {
-            desc.mTask();
-            desc.mStale = true;
-        } else if (desc.mNextExec <= now) {
-            if (!desc.mTask() || state != State::Running) {
+    bool nextSet{false};
+    {
+        std::unique_lock lock(mTaskMutex);
+        for (auto& desc : mTasks) {
+            if (desc.mPeriod == zero) {
+                desc.mTask();
                 desc.mStale = true;
-                continue;
-            }
-            if (desc.mPeriod > next) {
-                next = desc.mPeriod;
-                nextSet = true;
+            } else if (desc.mNextExec <= now) {
+                if (!desc.mTask() || state != State::Running) {
+                    desc.mStale = true;
+                    continue;
+                }
+                if (desc.mPeriod > next) {
+                    next = desc.mPeriod;
+                    nextSet = true;
+                }
             }
         }
+        //remove stale tasks
+        //mTasks.erase(std::remove_if(mTasks.begin(), mTasks.end(), [](const auto& task){ return task.mStale; }), mTasks.end());
+        std::erase_if(mTasks, [](const auto& task){ return task.mStale; });
     }
-    //remove stale tasks
-    std::erase_if(mTasks, [](const auto& task){ return task.mStale; });
-
     if (nextSet) {
         return now+next;
     } else {
@@ -90,6 +92,7 @@ sosimple::WorkerImpl::queue_impl(Task task) -> void
 auto
 sosimple::WorkerImpl::queue_impl(Task task, std::chrono::milliseconds interval) -> void
 {
+    std::unique_lock lock(mTaskMutex);
     mTasks.push_back({std::move(task), interval});
     mNotifier.notify_all();
 }

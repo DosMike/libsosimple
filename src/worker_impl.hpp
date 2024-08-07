@@ -45,6 +45,7 @@ private:
 
         friend class WorkerImpl;
     };
+    std::mutex mTaskMutex;
     std::vector<TaskDescriptor> mTasks;
     std::mutex mNotifyMutex;
     std::condition_variable mNotifier; //notify about new tasks

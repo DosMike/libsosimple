@@ -1,7 +1,6 @@
 #include <sosimple.hpp>
 #include <map>
 #include <string>
-#include <endian.h>
 
 sosimple::Endpoint::Endpoint(const std::string& ipaddr, uint16_t port)
 {

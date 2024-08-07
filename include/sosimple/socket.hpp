@@ -1,9 +1,9 @@
 #if !defined SOSIMPLE_SOCKET_HPP
 #define SOSIMPLE_SOCKET_HPP
 
-#include "netheaders.hpp"
-#include "endpoint.hpp"
-#include "utilities.hpp"
+#include "sosimple/platforms.hpp"
+#include "sosimple/endpoint.hpp"
+#include "sosimple/utilities.hpp"
 #include <chrono>
 
 namespace sosimple {
@@ -109,7 +109,7 @@ public:
 
     /// send a bunch of bytes. remote is ignored for udp multicast and tcp sockets
     virtual auto
-    send(const std::vector<uint8_t>& payload, Endpoint remote) const -> void = 0;
+    send(const std::vector<uint8_t>& payload, Endpoint remote={}) const -> void = 0;
 };
 
 }

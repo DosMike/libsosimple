@@ -6,7 +6,7 @@
 #include <condition_variable>
 #include <utility>
 
-#include <sosimple/exports.hpp>
+#include "sosimple/exports.hpp"
 
 namespace sosimple {
 

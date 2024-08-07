@@ -12,7 +12,7 @@ createTCPServer(socket_t acceptedSocket, Endpoint remote) -> std::shared_ptr<Com
 
 class SocketBase : public Socket, public std::enable_shared_from_this<SocketBase> {
 public:
-    mutable socket_t mFD{-1}; ///< if detected to be invalid/closed this is set back to -1 for shortcutting behaviour, otherwise constant
+    mutable socket_t mFD{POSIX_INVALID_DESCRIPTOR}; ///< if detected to be invalid/closed this is set back to -1 for shortcutting behaviour, otherwise constant
     mutable Endpoint mLocal{}; ///< might be lazy read after bind/construction once through getBoundEndpoint(), but doesn't change
     Endpoint mRemote{}; ///< remote empty for udp unicast or tcp listen. put during construction, then unchanged
     mutable int mFlags; ///< only internal markers. not really affecting state, more so reflecting it

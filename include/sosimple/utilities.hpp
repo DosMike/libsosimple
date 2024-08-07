@@ -1,7 +1,7 @@
 #if !defined SOSIMPLE_UTILITIES_HPP
 #define SOSIMPLE_UTILITIES_HPP
 
-#include "exports.hpp"
+#include "sosimple/exports.hpp"
 
 #include <set>
 #include <stdexcept>

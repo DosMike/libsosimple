@@ -1,9 +1,9 @@
 #if !defined SOSIMPLE_WORKER_HPP
 #define SOSIMPLE_WORKER_HPP
 
-#include "exports.hpp"
+#include "sosimple/exports.hpp"
 
-#include "netheaders.hpp"
+#include "sosimple/platforms.hpp"
 #include <functional>
 #include <chrono>
 #include <optional>

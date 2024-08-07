@@ -2,7 +2,7 @@
 # This file is part of MyBCP
 # There's no .py extension to prevent running this script directly on accident, outside a venv
 
-import sys, os, subprocess, shutil, itertools, re, argparse
+import sys, os, subprocess, shutil, itertools, re, argparse, errno
 from pathlib import Path
 from contextlib import suppress
 from functools import total_ordering
@@ -233,7 +233,6 @@ compiler=msvc
 compiler.cppstd=23
 compiler.version={compver}
 compiler.runtime=dynamic
-compiler.libcxx=libstdc++
 os=Windows
 
 [conf]
@@ -241,7 +240,7 @@ tools.microsoft.msbuild:vs_version={vsver}
 """)
     else:
         arch = subprocess.check_output(['uname', '-i']).decode("utf-8").strip()
-        compver = subprocess.check_output("g++ --version | head -n1 | cut -d\) -f2 | cut -d. -f1-2", shell=True).decode("utf-8").strip()
+        compver = subprocess.check_output("g++ --version | head -n1 | cut -d\\) -f2 | cut -d. -f1-2", shell=True).decode("utf-8").strip()
 
         print('Arch',arch,'CompVer',compver)
 
@@ -261,6 +260,7 @@ build_type=Release
 compiler=gcc
 compiler.cppstd=gnu23
 compiler.version={compver}
+compiler.libcxx=libstdc++
 os=Linux
 """)
         
@@ -318,15 +318,33 @@ add_executable(${PROJECT_NAME} ${SOURCE_FILES})
 
 
 def build_run(*cmd, sub=None):
+    print('> Running :',' '.join(cmd))
     flush()
     subprocess.check_call(cmd, encoding="utf-8", env=os.environ, cwd=sub)
     flush()
 
 
+def find_toolchain_file_relative(where, build_type):
+    if (where / 'conan_toolchain.cmake').is_file():
+        return where / 'conan_toolchain.cmake'
+    elif (where / 'build' / 'generators' / 'conan_toolchain.cmake').is_file():
+        return where / 'build' / 'generators' / 'conan_toolchain.cmake'
+    elif (where / 'build' / build_type / 'generators' / 'conan_toolchain.cmake').is_file():
+        return where / 'build' / build_type / 'generators' / 'conan_toolchain.cmake'
+    else:
+        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), 'conan_toolchain.cmake')
+
+
+def path_escape_spaces(path, plat):
+    if plat == 'windows':
+        return str(path).replace(' ', '^ ')
+    else:
+        return str(path).replace(' ', '\\ ')
+
+
 def build(plat, where, build_type, cmake_args, install):
     try:
         # tool chain file requires full path for .py configurations over filename for .txt conanfiles
-        tc_file = Path('build') / build_type / 'generators' / 'conan_toolchain.cmake'
         if install:
             build_run("conan", "create", ".", "-s", "build_type="+build_type)
         elif plat == 'windows':
@@ -334,14 +352,19 @@ def build(plat, where, build_type, cmake_args, install):
             if generator is None:
                 return False
 
-            build_run("conan", "install", ".", "--profile", ".\\conanprofile.txt", f"--output-folder", str(where), "--build", "missing")
-            build_run("cmake", "..", "-G", generator, "-DCMAKE_TOOLCHAIN_FILE="+str(tc_file), *cmake_args, sub=where)
+            build_run("conan", "install", ".", "--profile", ".\\conanprofile.txt", f"--output-folder", path_escape_spaces(where, plat), "-s", "build_type="+build_type, "--build", "missing")
+            tc_file = find_toolchain_file_relative(where, build_type)
+            build_run("cmake", "..", "-G", generator, "-DCMAKE_TOOLCHAIN_FILE="+path_escape_spaces(tc_file, plat), *cmake_args, sub=where)
             build_run("cmake", "--build", ".", "--config", build_type, sub=where)
         else:
-            build_run("conan", "install", ".", "--profile", "./conanprofile.txt", f"--output-folder", str(where), "--build", "missing")
-            build_run("cmake", "..", "-DCMAKE_TOOLCHAIN_FILE="+str(tc_file), "-DCMAKE_BUILD_TYPE="+build_type, *cmake_args, sub=where)
+            build_run("conan", "install", ".", "--profile", "./conanprofile.txt", f"--output-folder", path_escape_spaces(where, plat), "-s", "build_type="+build_type, "--build", "missing")
+            tc_file = find_toolchain_file_relative(where, build_type)
+            build_run("cmake", "..", "-DCMAKE_TOOLCHAIN_FILE="+path_escape_spaces(tc_file, plat), "-DCMAKE_BUILD_TYPE="+build_type, *cmake_args, sub=where)
             build_run("cmake", "--build", ".", sub=where)
         return True
+    except FileNotFoundError as e:
+        print(e)
+        return False
     except:
         return False
 

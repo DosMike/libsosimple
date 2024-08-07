@@ -1,8 +1,9 @@
 #include <sosimple/socket.hpp>
 #include <sosimple/worker.hpp>
-#include <sosimple/netheaders.hpp>
+#include <sosimple/platforms.hpp>
 
 #include "socket_impl.hpp"
+#include "platforms_internal.hpp"
 
 #define SC_DEFAULT_BUFFER_SIZE 4096
 
@@ -12,16 +13,20 @@
 #define SC_SOCKFLAG_CLOSED 2
 
 /// marking the socket closed, closing the file descriptor and notifying gets a bit repetitive...
-#define SOCKET_ERROR(ERROR_ENUM, MESSAGE) {\
+#define SOSIMPLE_SOCKET_ERROR(ERROR_ENUM, MESSAGE) {\
     mFlags |= SC_SOCKFLAG_CLOSED; \
-    close(mFD); \
+    POSIX_CLOSE(mFD); \
     notifySocketError(socket_error((ERROR_ENUM), (MESSAGE))); \
 }
 
 static auto
-errno2str(int error) -> std::string {
-    const char* name = strerrorname_np(error);
-    const char* desc = strerrordesc_np(error);
+errno2str(int error, const char* custom_desc=nullptr) -> std::string {
+    const char* name = GNU_STRERRORNAME_NP(error);
+    const char* desc;
+    if (custom_desc) desc = custom_desc;
+    else desc = GNU_STRERRORDESC_NP(error);
+    if (name == nullptr) name = "<NULLPTR>";
+    if (desc == nullptr) desc = "<NULLPTR>";
     return std::format("{} ({}): {}", name, error, desc);
 }
 
@@ -31,7 +36,7 @@ getBoundAddress(socket_t fd) -> sosimple::Endpoint
     sockaddr_storage myaddr{};
     socklen_t addrlen = sizeof(sockaddr_in6);;
     int success = ::getsockname(fd, (sockaddr*)&myaddr, &addrlen);
-    int error = errno;
+    int error = POSIX_ERRNO;
     if (success == -1)
         throw new sosimple::socket_error(sosimple::SocketError::Generic, "Could not read local address for socket: "+errno2str(error));
     sosimple::Endpoint boundEndpoint = sosimple::Endpoint((sockaddr*)&myaddr, addrlen);
@@ -39,35 +44,55 @@ getBoundAddress(socket_t fd) -> sosimple::Endpoint
 }
 
 static auto
+unblockSocket(int fd) -> bool
+{
+#if defined _WIN32
+    unsigned long mode = 1;
+    return (ioctlsocket(fd, FIONBIO, &mode) == 0);
+#else
+    int flags = fcntl(fd, F_GETFL, 0);
+    return (flags != -1) && (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0);
+#endif
+}
+
+static auto
 setDefaultSockOpts(int fd) -> void
 {
     int yes = 1;
-    if (::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes))==-1)
-        throw sosimple::socket_error(sosimple::SocketError::Configuration, "Unable to set socket option SO_REUSEADDR: " + errno2str(errno));
-    if (::setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes))==-1)
-        throw sosimple::socket_error(sosimple::SocketError::Configuration, "Unable to set socket option SO_REUSEPORT: " + errno2str(errno));
-    if (::setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes))==-1)
-        throw sosimple::socket_error(sosimple::SocketError::Configuration, "Unable to set socket option SO_KEEPALIVE: " + errno2str(errno));
+    if (POSIX_SETSOCKOPT(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes))==-1)
+        throw sosimple::socket_error(sosimple::SocketError::Configuration, "Unable to set socket option SO_REUSEADDR: " + errno2str(POSIX_ERRNO));
+#if defined SO_REUSEPORT
+    if (POSIX_SETSOCKOPT(fd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes))==-1)
+        throw sosimple::socket_error(sosimple::SocketError::Configuration, "Unable to set socket option SO_REUSEPORT: " + errno2str(POSIX_ERRNO));
+#endif
+    if (POSIX_SETSOCKOPT(fd, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes))==-1)
+        throw sosimple::socket_error(sosimple::SocketError::Configuration, "Unable to set socket option SO_KEEPALIVE: " + errno2str(POSIX_ERRNO));
     int bufferSz = SC_DEFAULT_BUFFER_SIZE;
-    if (::setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufferSz, sizeof(bufferSz))==-1)
-        throw sosimple::socket_error(sosimple::SocketError::Configuration, "Unable to set socket option SO_SNDBUF: " + errno2str(errno));
-    if (::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufferSz, sizeof(bufferSz))==-1)
-        throw sosimple::socket_error(sosimple::SocketError::Configuration, "Unable to set socket option SO_RCVBUF: " + errno2str(errno));
+    if (POSIX_SETSOCKOPT(fd, SOL_SOCKET, SO_SNDBUF, &bufferSz, sizeof(bufferSz))==-1)
+        throw sosimple::socket_error(sosimple::SocketError::Configuration, "Unable to set socket option SO_SNDBUF: " + errno2str(POSIX_ERRNO));
+    if (POSIX_SETSOCKOPT(fd, SOL_SOCKET, SO_RCVBUF, &bufferSz, sizeof(bufferSz))==-1)
+        throw sosimple::socket_error(sosimple::SocketError::Configuration, "Unable to set socket option SO_RCVBUF: " + errno2str(POSIX_ERRNO));
 }
 
 auto
 sosimple::createUDPUnicast(Endpoint bindAddr) -> std::shared_ptr<ComSocket>
 {
-    // create the socket
+    SOSIMPLE_SOCKET_INIT;
+
+    // create the socket, non-blocking
     int domain = bindAddr.isIPv4() ? AF_INET : AF_INET6;
-    int type = SOCK_DGRAM | SOCK_NONBLOCK;
+    int type = SOCK_DGRAM;
     int protocol = IPPROTO_UDP;
-    socket_t fd = ::socket( domain, type, protocol );
-    int error = errno;
-    if (fd == -1) {
-        if (error == EACCES) throw socket_error(SocketError::Permission, "Unable to create socket: "+errno2str(error));
-        else if (error == EMFILE || error == ENFILE) throw socket_error(SocketError::HandleLimit, "Unable to create socket: "+errno2str(error));
+    socket_t fd = POSIX_SOCKET( domain, type, protocol );
+    int error = POSIX_ERRNO;
+    if (!POSIX_ISVALIDDESCRIPTOR(fd)) {
+        if (error == SOCKET_ERRNO_EACCES) throw socket_error(SocketError::Permission, "Unable to create socket: " + errno2str(error));
+        else if (error == SOCKET_ERRNO_EMFILE || error == SOCKET_ERRNO_ENFILE) throw socket_error(SocketError::HandleLimit, "Unable to create socket: " + errno2str(error));
         else throw socket_error(SocketError::Generic, "Unable to create socket: " + errno2str(error));
+    }
+    if (!unblockSocket(fd)) {
+        POSIX_CLOSE(fd);
+        throw socket_error(SocketError::Configuration, "Could not switch socket to unblocking");
     }
     //making the shared pointer here so we can't forget to close() the fd
     auto socket = std::make_shared<ComSocketImpl>(fd, Socket::Kind::UDP_Unicast);
@@ -75,13 +100,13 @@ sosimple::createUDPUnicast(Endpoint bindAddr) -> std::shared_ptr<ComSocket>
     // bind the socket
     sockaddr_storage addr{};
     bindAddr.toSockaddrStorage(addr);
-    int success = ::bind( fd, (sockaddr*)&addr, sizeof(addr) );
-    error = errno;
+    int success = POSIX_BIND( fd, (sockaddr*)&addr, sizeof(addr) );
+    error = POSIX_ERRNO;
     if (success == -1) {
-        if (error == EACCES) throw socket_error(SocketError::Permission, "Unable to bind socket: "+errno2str(error));
-        else if (error == EADDRINUSE) {
-            if (bindAddr.getPort() == 0) throw socket_error(SocketError::HandleLimit, "Unable to bind socket: EADDRINUSE (98): No free ephemeral ports");
-            else throw socket_error(SocketError::Bind, "Unable to bind socket: EADDRINUSE (98): Address in use");
+        if (error == SOCKET_ERRNO_EACCES) throw socket_error(SocketError::Permission, "Unable to bind socket: " + errno2str(error));
+        else if (error == SOCKET_ERRNO_EADDRINUSE) {
+            if (bindAddr.getPort() == 0) throw socket_error(SocketError::HandleLimit, "Unable to bind socket: " + errno2str(error, "No free ephemeral ports"));
+            else throw socket_error(SocketError::Bind, "Unable to bind socket: " + errno2str(error, "Address in use"));
         } else throw socket_error(SocketError::Generic, "Unable to bind socket: " + errno2str(error));
     }
     if (bindAddr.isAny())
@@ -97,21 +122,27 @@ sosimple::createUDPUnicast(Endpoint bindAddr) -> std::shared_ptr<ComSocket>
 }
 
 auto
-sosimple::createUDPMulticast(Endpoint interface, Endpoint multicastGroup) -> std::shared_ptr<ComSocket>
+sosimple::createUDPMulticast(Endpoint iface, Endpoint multicastGroup) -> std::shared_ptr<ComSocket>
 {
-    if (interface.isIPv4() != multicastGroup.isIPv4())
+    SOSIMPLE_SOCKET_INIT;
+
+    if (iface.isIPv4() != multicastGroup.isIPv4())
         throw socket_error(SocketError::Configuration, "Unable to create socket: interface and multicast group were not specified with the same address family (IPv4/IPv6)");
 
     // create the socket
     int domain = multicastGroup.isIPv4() ? AF_INET : AF_INET6;
-    int type = SOCK_DGRAM | SOCK_NONBLOCK;
+    int type = SOCK_DGRAM;
     int protocol = IPPROTO_UDP;
-    socket_t fd = ::socket( domain, type, protocol );
-    int error = errno;
-    if (fd == -1) {
-        if (error == EACCES) throw socket_error(SocketError::Permission, "Unable to create socket: "+errno2str(error));
-        else if (error == EMFILE || error == ENFILE) throw socket_error(SocketError::HandleLimit, "Unable to create socket: "+errno2str(error));
+    socket_t fd = POSIX_SOCKET( domain, type, protocol );
+    int error = POSIX_ERRNO;
+    if (!POSIX_ISVALIDDESCRIPTOR(fd)) {
+        if (error == SOCKET_ERRNO_EACCES) throw socket_error(SocketError::Permission, "Unable to create socket: "+errno2str(error));
+        else if (error == SOCKET_ERRNO_EMFILE || error == SOCKET_ERRNO_ENFILE) throw socket_error(SocketError::HandleLimit, "Unable to create socket: "+errno2str(error));
         else throw socket_error(SocketError::Generic, "Unable to create socket: " + errno2str(error));
+    }
+    if (!unblockSocket(fd)) {
+        POSIX_CLOSE(fd);
+        throw socket_error(SocketError::Configuration, "Could not switch socket to unblocking");
     }
     //making the shared pointer here so we can't forget to close() the fd
     auto socket = std::make_shared<ComSocketImpl>(fd, Socket::Kind::UDP_Multicast);
@@ -120,17 +151,17 @@ sosimple::createUDPMulticast(Endpoint interface, Endpoint multicastGroup) -> std
     // bind the socket
     sockaddr_storage addr{};
     addr.ss_family = domain; // bind to "any" == unfiltered
-    int success = ::bind( fd, (sockaddr*)&addr, sizeof(addr) );
-    error = errno;
+    int success = POSIX_BIND( fd, (sockaddr*)&addr, sizeof(addr) );
+    error = POSIX_ERRNO;
     if (success == -1) {
-        if (error == EACCES) throw socket_error(SocketError::Permission, "Unable to bind socket: "+errno2str(error));
-        else if (error == EADDRINUSE) throw socket_error(SocketError::Bind, "Unable to bind socket: "+errno2str(error));
+        if (error == SOCKET_ERRNO_EACCES) throw socket_error(SocketError::Permission, "Unable to bind socket: "+errno2str(error));
+        else if (error == SOCKET_ERRNO_EADDRINUSE) throw socket_error(SocketError::Bind, "Unable to bind socket: "+errno2str(error));
         else throw socket_error(SocketError::Generic, "Unable to bind socket: " + errno2str(error));
     }
-    if (interface.isAny())
+    if (iface.isAny())
         socket->mLocal = getBoundAddress(fd);
     else
-        socket->mLocal = interface;
+        socket->mLocal = iface;
 
     // set basic socket options
     setDefaultSockOpts(fd);
@@ -140,18 +171,18 @@ sosimple::createUDPMulticast(Endpoint interface, Endpoint multicastGroup) -> std
     if (domain == AF_INET) {
         struct ip_mreq mreq{};
         multicastGroup.getInAddr(mreq.imr_multiaddr);
-        interface.getInAddr(mreq.imr_interface);
-        if (::setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq))==-1)
-            throw socket_error(SocketError::Configuration, "Unable to join multicast group: " + errno2str(errno));
-        if (::setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &yes, sizeof(yes))==-1)
-            throw socket_error(SocketError::Configuration, "Unable to set socket option SO_KEEPALIVE: " + errno2str(errno));
+        iface.getInAddr(mreq.imr_interface);
+        if (POSIX_SETSOCKOPT(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq))==-1)
+            throw socket_error(SocketError::Configuration, "Unable to join multicast group: " + errno2str(POSIX_ERRNO));
+        if (POSIX_SETSOCKOPT(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &yes, sizeof(yes))==-1)
+            throw socket_error(SocketError::Configuration, "Unable to set socket option SO_KEEPALIVE: " + errno2str(POSIX_ERRNO));
     } else {
         struct ipv6_mreq mreq{};
         multicastGroup.getIn6Addr(mreq.ipv6mr_multiaddr);
-        if (::setsockopt(fd, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP, &mreq, sizeof(mreq))==-1)
-            throw socket_error(SocketError::Configuration, "Unable to join multicast group: " + errno2str(errno));
-        if (::setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &yes, sizeof(yes))==-1)
-            throw socket_error(SocketError::Configuration, "Unable to set socket option SO_KEEPALIVE: " + errno2str(errno));
+        if (POSIX_SETSOCKOPT(fd, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP, &mreq, sizeof(mreq))==-1)
+            throw socket_error(SocketError::Configuration, "Unable to join multicast group: " + errno2str(POSIX_ERRNO));
+        if (POSIX_SETSOCKOPT(fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &yes, sizeof(yes))==-1)
+            throw socket_error(SocketError::Configuration, "Unable to set socket option SO_KEEPALIVE: " + errno2str(POSIX_ERRNO));
     }
 
     socket->start();
@@ -161,19 +192,25 @@ sosimple::createUDPMulticast(Endpoint interface, Endpoint multicastGroup) -> std
 auto
 sosimple::createTCPListen(Endpoint bindAddr) -> std::shared_ptr<ListenSocket>
 {
+    SOSIMPLE_SOCKET_INIT;
+
     if (bindAddr.isAny())
         throw socket_error(SocketError::Configuration, "Can not bind listen socket to unspecified endpoint");
 
     // create the socket
     int domain = bindAddr.isIPv4() ? AF_INET : AF_INET6;
-    int type = SOCK_STREAM | SOCK_NONBLOCK;
+    int type = SOCK_STREAM;
     int protocol = IPPROTO_TCP;
-    socket_t fd = ::socket( domain, type, protocol );
-    int error = errno;
-    if (fd == -1) {
-        if (error == EACCES) throw socket_error(SocketError::Permission, "Unable to create socket: "+errno2str(error));
-        else if (error == EMFILE || error == ENFILE) throw socket_error(SocketError::HandleLimit, "Unable to create socket: "+errno2str(error));
+    socket_t fd = POSIX_SOCKET( domain, type, protocol );
+    int error = POSIX_ERRNO;
+    if (!POSIX_ISVALIDDESCRIPTOR(fd)) {
+        if (error == SOCKET_ERRNO_EACCES) throw socket_error(SocketError::Permission, "Unable to create socket: "+errno2str(error));
+        else if (error == SOCKET_ERRNO_EMFILE || error == SOCKET_ERRNO_ENFILE) throw socket_error(SocketError::HandleLimit, "Unable to create socket: "+errno2str(error));
         else throw socket_error(SocketError::Generic, "Unable to create socket: " + errno2str(error));
+    }
+    if (!unblockSocket(fd)) {
+        POSIX_CLOSE(fd);
+        throw socket_error(SocketError::Configuration, "Could not switch socket to unblocking");
     }
     //making the shared pointer here so we can't forget to close() the fd
     auto socket = std::make_shared<ListenSocketImpl>(fd);
@@ -181,13 +218,13 @@ sosimple::createTCPListen(Endpoint bindAddr) -> std::shared_ptr<ListenSocket>
     // bind the socket
     sockaddr_storage addr{};
     bindAddr.toSockaddrStorage(addr);
-    int success = ::bind( fd, (sockaddr*)&addr, sizeof(addr) );
-    error = errno;
+    int success = POSIX_BIND( fd, (sockaddr*)&addr, sizeof(addr) );
+    error = POSIX_ERRNO;
     if (success == -1) {
-        if (error == EACCES) throw socket_error(SocketError::Permission, "Unable to bind socket: "+errno2str(error));
-        else if (error == EADDRINUSE) {
-            if (bindAddr.getPort() == 0) throw socket_error(SocketError::HandleLimit, "Unable to bind socket: EADDRINUSE (98): No free ephemeral ports");
-            else throw socket_error(SocketError::Bind, "Unable to bind socket: EADDRINUSE (98): Address in use");
+        if (error == SOCKET_ERRNO_EACCES) throw socket_error(SocketError::Permission, "Unable to bind socket: " + errno2str(error));
+        else if (error == SOCKET_ERRNO_EADDRINUSE) {
+            if (bindAddr.getPort() == 0) throw socket_error(SocketError::HandleLimit, "Unable to bind socket: " + errno2str(error, "No free ephemeral ports"));
+            else throw socket_error(SocketError::Bind, "Unable to bind socket: " + errno2str(error, "Address in use"));
         } else throw socket_error(SocketError::Generic, "Unable to bind socket: " + errno2str(error));
     }
     socket->mLocal = bindAddr;
@@ -196,8 +233,8 @@ sosimple::createTCPListen(Endpoint bindAddr) -> std::shared_ptr<ListenSocket>
     setDefaultSockOpts(fd);
 
     // prepare the listen queue size
-    if (::listen(fd, 1)==-1) //we should queue them away quick enough anyways, but whatever
-        throw socket_error(SocketError::Configuration, "Unable to set listen queue size: " + errno2str(errno));
+    if (POSIX_LISTEN(fd, 1)==-1) //we should queue them away quick enough anyways, but whatever
+        throw socket_error(SocketError::Configuration, "Unable to set listen queue size: " + errno2str(POSIX_ERRNO));
 
     socket->start();
     return socket;
@@ -206,19 +243,25 @@ sosimple::createTCPListen(Endpoint bindAddr) -> std::shared_ptr<ListenSocket>
 auto
 sosimple::createTCPClient(Endpoint bindAddr, Endpoint remote) -> std::shared_ptr<ComSocket>
 {
+    SOSIMPLE_SOCKET_INIT;
+
     if (bindAddr.isIPv4() != remote.isIPv4())
         throw socket_error(SocketError::Configuration, "Unable to create socket: local and remote endpoints were not specified with the same address family (IPv4/IPv6)");
 
     // create the socket
     int domain = bindAddr.isIPv4() ? AF_INET : AF_INET6;
-    int type = SOCK_STREAM | SOCK_NONBLOCK;
+    int type = SOCK_STREAM;
     int protocol = IPPROTO_TCP;
-    socket_t fd = ::socket( domain, type, protocol );
-    int error = errno;
-    if (fd == -1) {
-        if (error == EACCES) throw socket_error(SocketError::Permission, "Unable to create socket: "+errno2str(error));
-        else if (error == EMFILE || error == ENFILE) throw socket_error(SocketError::HandleLimit, "Unable to create socket: "+errno2str(error));
+    socket_t fd = POSIX_SOCKET( domain, type, protocol );
+    int error = POSIX_ERRNO;
+    if (!POSIX_ISVALIDDESCRIPTOR(fd)) {
+        if (error == SOCKET_ERRNO_EACCES) throw socket_error(SocketError::Permission, "Unable to create socket: "+errno2str(error));
+        else if (error == SOCKET_ERRNO_EMFILE || error == SOCKET_ERRNO_ENFILE) throw socket_error(SocketError::HandleLimit, "Unable to create socket: "+errno2str(error));
         else throw socket_error(SocketError::Generic, "Unable to create socket: " + errno2str(error));
+    }
+    if (!unblockSocket(fd)) {
+        POSIX_CLOSE(fd);
+        throw socket_error(SocketError::Configuration, "Could not switch socket to unblocking");
     }
     //making the shared pointer here so we can't forget to close() the fd
     auto socket = std::make_shared<ComSocketImpl>(fd, Socket::Kind::TCP_Client);
@@ -228,13 +271,13 @@ sosimple::createTCPClient(Endpoint bindAddr, Endpoint remote) -> std::shared_ptr
     // bind the socket
     sockaddr_storage addr{};
     bindAddr.toSockaddrStorage(addr);
-    int success = ::bind( fd, (sockaddr*)&addr, sizeof(addr) );
-    error = errno;
+    int success = POSIX_BIND( fd, (sockaddr*)&addr, sizeof(addr) );
+    error = POSIX_ERRNO;
     if (success == -1) {
-        if (error == EACCES) throw socket_error(SocketError::Permission, "Unable to bind socket: " + errno2str(error));
-        else if (error == EADDRINUSE) {
-            if (bindAddr.getPort() == 0) throw socket_error(SocketError::HandleLimit, "Unable to bind socket: EADDRINUSE (98): No free ephemeral ports");
-            else throw socket_error(SocketError::Bind, "Unable to bind socket: EADDRINUSE (98): Address already in use");
+        if (error == SOCKET_ERRNO_EACCES) throw socket_error(SocketError::Permission, "Unable to bind socket: " + errno2str(error));
+        else if (error == SOCKET_ERRNO_EADDRINUSE) {
+            if (bindAddr.getPort() == 0) throw socket_error(SocketError::HandleLimit, "Unable to bind socket: " + errno2str(error, "No free ephemeral ports"));
+            else throw socket_error(SocketError::Bind, "Unable to bind socket: " + errno2str(error, "Address already in use"));
         } else throw socket_error(SocketError::Generic, "Unable to bind socket: " + errno2str(error));
     }
     if (bindAddr.isAny())
@@ -250,11 +293,11 @@ sosimple::createTCPClient(Endpoint bindAddr, Endpoint remote) -> std::shared_ptr
     // i dont like that, so we just throw it with the rest, socket_error should be expected already anyways
     ::memset(&addr, 0, sizeof(addr));
     remote.toSockaddrStorage(addr);
-    if (::connect(fd, (sockaddr*)&addr, sizeof(addr))==-1) {
-        int error = errno;
-        if (error == EAGAIN || error == EINPROGRESS)
+    if (POSIX_CONNECT(fd, (sockaddr*)&addr, sizeof(addr))==-1) {
+        int error = POSIX_ERRNO;
+        if (error == SOCKET_ERRNO_EAGAIN || error == SOCKET_ERRNO_EINPROGRESS || error == SOCKET_ERRNO_EWOULDBLOCK)
             { /*ignore*/ }
-        else if (error == EINTR || error == ENETUNREACH)
+        else if (error == SOCKET_ERRNO_EINTR || error == SOCKET_ERRNO_ENETUNREACH)
             throw socket_error(SocketError::BrokenPipe, "Unable to connect socket: " + errno2str(error));
         else
             throw socket_error(SocketError::Generic, "Unable to connect socket: " + errno2str(error));
@@ -302,7 +345,7 @@ sosimple::SocketBase::notifySocketError(socket_error error) const -> void
 auto
 sosimple::SocketBase::isOpen() const -> bool
 {
-    if (mFD < 0 || (mFlags & SC_SOCKFLAG_CLOSED)) return false;
+    if (!POSIX_ISVALIDDESCRIPTOR(mFD) || (mFlags & SC_SOCKFLAG_CLOSED)) return false;
 
     return pollFD(POLLOUT, 10'000, true) && (mFlags & SC_SOCKFLAG_CLOSED)==0;
 }
@@ -314,7 +357,7 @@ sosimple::SocketBase::setTimeout(std::chrono::milliseconds timeout) -> void
     if (timeout == std::chrono::microseconds::zero()) {
         mWatchDog.setCallback({}); //ignore timeouts
     } else {
-        mWatchDog.setCallback([this](){ SOCKET_ERROR(SocketError::Timeout, "Socket watchdog tripped: Timeout") });
+        mWatchDog.setCallback([this](){ SOSIMPLE_SOCKET_ERROR(SocketError::Timeout, "Socket watchdog tripped: Timeout") });
     }
 }
 
@@ -334,25 +377,29 @@ sosimple::SocketBase::getLocalEndpoint() const -> Endpoint
 auto
 sosimple::SocketBase::pollFD(int pollval, unsigned timeoutMS, bool notifyOnTimeout) const -> bool
 {
+    constexpr int pollerror = (POLLERR|POLLHUP|POLLNVAL);
     pollfd pollreq{};
     pollreq.fd = mFD;
     pollreq.events = pollval;
-    int result = ::poll(&pollreq, 1, timeoutMS); // 10 second timeout
-    int error = errno;
+    int result = POSIX_POLL(&pollreq, 1, timeoutMS); // 10 second timeout
+    int error = POSIX_ERRNO;
     if (result > 0) {
-        if (pollreq.revents != pollval) SOCKET_ERROR(SocketError::BrokenPipe, "Unable to poll connection: "+errno2str(error))
+        if ((pollreq.revents & pollerror) != 0) {
+            auto emsg = std::format("Poll responded with {:04X}", pollreq.revents);
+            SOSIMPLE_SOCKET_ERROR(SocketError::BrokenPipe, "Unable to poll connection: "+errno2str(error, emsg.c_str()))
+        }
         else return true;
     } else if (result == 0) {
-        if (notifyOnTimeout) SOCKET_ERROR(SocketError::Timeout, "Unable to poll connection: "+errno2str(error))
+        if (notifyOnTimeout) SOSIMPLE_SOCKET_ERROR(SocketError::Timeout, "Unable to poll connection: "+errno2str(error))
     }
-    else if (error == ENOMEM) SOCKET_ERROR(SocketError::NoMemory, "Unable to poll connection: "+errno2str(error))
-    else SOCKET_ERROR(SocketError::Generic, "Unable to poll connection: " + errno2str(error))
+    else if (error == SOCKET_ERRNO_ENOMEM) SOSIMPLE_SOCKET_ERROR(SocketError::NoMemory, "Unable to poll connection: "+errno2str(error))
+    else SOSIMPLE_SOCKET_ERROR(SocketError::Generic, "Unable to poll connection: " + errno2str(error))
     return false;
 }
 
 sosimple::SocketBase::~SocketBase()
 {
-    if ((mFlags & SC_SOCKFLAG_CLOSED)==0) close(mFD);
+    if ((mFlags & SC_SOCKFLAG_CLOSED)==0) POSIX_CLOSE(mFD);
 }
 
 sosimple::ListenSocketImpl::~ListenSocketImpl()
@@ -373,28 +420,32 @@ sosimple::ListenSocketImpl::threadMain() -> void
     while (mRunning && (mFlags & SC_SOCKFLAG_CLOSED)==0) {
         sockaddr_storage addr{};
         socklen_t addrSz = sizeof(addr);
-        socket_t fd = ::accept4(mFD, (sockaddr*)&addr, &addrSz, SOCK_NONBLOCK);
-        int error = errno;
+        socket_t fd = POSIX_ACCEPT(mFD, (sockaddr*)&addr, &addrSz);
+        int error = POSIX_ERRNO;
 
-        if (fd == -1) {
-            if (error == EAGAIN || error == EWOULDBLOCK) {
+        if (!POSIX_ISVALIDDESCRIPTOR(fd)) {
+            if (error == SOCKET_ERRNO_EAGAIN || error == SOCKET_ERRNO_EWOULDBLOCK) {
                 // nothin polled within a ms and the watchdog trips? -> timeout!
                 if (!pollFD(POLLIN, 1, false) && !mWatchDog.check()) mRunning = false;
-            } else if (error == ECONNABORTED) {
+            } else if (error == SOCKET_ERRNO_ECONNABORTED) {
                 continue; // "a connection?"
-            } else if (error == ENOBUFS || error == ENOMEM) {
+            } else if (error == SOCKET_ERRNO_ENOBUFS || error == SOCKET_ERRNO_ENOMEM) {
                 mRunning = false;
-                SOCKET_ERROR(SocketError::NoMemory, "Could not accept connection: "+errno2str(error))
-            } else if (error == EMFILE || error == ENFILE) {
+                SOSIMPLE_SOCKET_ERROR(SocketError::NoMemory, "Could not accept connection: "+errno2str(error))
+            } else if (error == SOCKET_ERRNO_EMFILE || error == SOCKET_ERRNO_ENFILE) {
                 mRunning = false;
-                SOCKET_ERROR(SocketError::HandleLimit, "Could not accept connection: "+errno2str(error))
-            } else if (error == EINTR) {
+                SOSIMPLE_SOCKET_ERROR(SocketError::HandleLimit, "Could not accept connection: "+errno2str(error))
+            } else if (error == SOCKET_ERRNO_EINTR) {
                 mRunning = false;
-                SOCKET_ERROR(SocketError::BrokenPipe, "Could not accept connection: "+errno2str(error))
+                SOSIMPLE_SOCKET_ERROR(SocketError::BrokenPipe, "Could not accept connection: "+errno2str(error))
             } else {
                 mRunning = false;
-                SOCKET_ERROR(SocketError::Generic, "Could not accept connection: "+errno2str(error))
+                SOSIMPLE_SOCKET_ERROR(SocketError::Generic, "Could not accept connection: "+errno2str(error))
             }
+        } else if (!unblockSocket(fd)) {
+            mRunning = false;
+            POSIX_CLOSE(fd);
+            SOSIMPLE_SOCKET_ERROR(SocketError::Generic, "Could not unblock accepted socket");
         } else {
             mWatchDog.reset();
             notifyAccept(fd, Endpoint{(sockaddr*)&addr, addrSz});
@@ -425,7 +476,8 @@ sosimple::ListenSocketImpl::onAccept(AcceptCallback callback) -> void
 sosimple::ComSocketImpl::~ComSocketImpl()
 {
     mRunning = false;
-    mWorker.join();
+    if (mWorker.joinable())
+        mWorker.join();
 }
 
 auto
@@ -439,30 +491,31 @@ sosimple::ComSocketImpl::threadMain() -> void
 {
     uint8_t chunk[4096];
     const bool connected = (mFlags & SC_SOCKFLAG_CONNECTED) != 0;
+    pollFD(POLLOUT, 2000, false); // wait for the connection (avoid early ENOTCONN)
     while (mRunning && (mFlags & SC_SOCKFLAG_CLOSED)==0) {
         int read;
         Endpoint from;
         sockaddr_storage addr{};
         socklen_t addrSz = sizeof(addr);
         if (connected) {
-            read = ::recv(mFD, chunk, sizeof(chunk), 0);
+            read = POSIX_RECV(mFD, chunk, sizeof(chunk), 0);
         } else {
-            read = ::recvfrom(mFD, chunk, sizeof(chunk), 0, (sockaddr*)&addr, &addrSz);
+            read = POSIX_RECVFROM(mFD, chunk, sizeof(chunk), 0, (sockaddr*)&addr, &addrSz);
         }
-        int error = errno;
+        int error = POSIX_ERRNO;
         if (read == -1) {
-            if (error == EAGAIN || error == EWOULDBLOCK) {
+            if (error == SOCKET_ERRNO_EAGAIN || error == SOCKET_ERRNO_EWOULDBLOCK) {
                 // nothin polled within a ms and the watchdog trips? -> timeout!
                 if (!pollFD(POLLIN, 1, false) && !mWatchDog.check()) mRunning = false;
-            } else if (error == ENOMEM) {
+            } else if (error == SOCKET_ERRNO_ENOMEM) {
                 mRunning = false;
-                SOCKET_ERROR(SocketError::NoMemory, "Could not read socket: "+errno2str(error))
-            } else if (error == EINTR || error == ECONNREFUSED || error == ENOTCONN) {
+                SOSIMPLE_SOCKET_ERROR(SocketError::NoMemory, "Could not read socket: "+errno2str(error))
+            } else if (error == SOCKET_ERRNO_EINTR || error == SOCKET_ERRNO_ECONNREFUSED || error == SOCKET_ERRNO_ENOTCONN) {
                 mRunning = false;
-                SOCKET_ERROR(SocketError::BrokenPipe, "Could not read socket: "+errno2str(error))
+                SOSIMPLE_SOCKET_ERROR(SocketError::BrokenPipe, "Could not read socket: "+errno2str(error))
             } else {
                 mRunning = false;
-                SOCKET_ERROR(SocketError::Generic, "Could not read socket: "+errno2str(error))
+                SOSIMPLE_SOCKET_ERROR(SocketError::Generic, "Could not read socket: "+errno2str(error))
             }
         } else if (read>0) {
             if (connected)
@@ -512,30 +565,30 @@ sosimple::ComSocketImpl::send(const std::vector<uint8_t>& payload, Endpoint remo
     if (mKind == Kind::UDP_Multicast) {
         sockaddr_storage addr{};
         mRemote.toSockaddrStorage(addr);
-        result = ::sendto(mFD, payload.data(), payload.size(), 0, (sockaddr*)&addr, sizeof(addr));
-        error = errno;
+        result = POSIX_SENDTO(mFD, payload.data(), payload.size(), 0, (sockaddr*)&addr, sizeof(addr));
+        error = POSIX_ERRNO;
     } else if (mKind == Kind::UDP_Unicast) {
         sockaddr_storage addr{};
         remote.toSockaddrStorage(addr);
-        result = ::sendto(mFD, payload.data(), payload.size(), 0, (sockaddr*)&addr, sizeof(addr));
-        error = errno;
+        result = POSIX_SENDTO(mFD, payload.data(), payload.size(), 0, (sockaddr*)&addr, sizeof(addr));
+        error = POSIX_ERRNO;
     } else {
-        result = ::send(mFD, payload.data(), payload.size(), 0);
-        error = errno;
+        result = POSIX_SEND(mFD, payload.data(), payload.size(), 0);
+        error = POSIX_ERRNO;
     }
     if (result == -1) {
-        if (error == EAGAIN || error == EWOULDBLOCK) {
+        if (error == SOCKET_ERRNO_EAGAIN || error == SOCKET_ERRNO_EWOULDBLOCK) {
             /* pass */
-        } else if (error == EACCES) {
-            SOCKET_ERROR(SocketError::Permission, "Could not send on socket: "+errno2str(error))
-        } else if (error == ENOBUFS || error == ENOMEM || error == EMSGSIZE) {
-            SOCKET_ERROR(SocketError::NoMemory, "Could not send on socket: "+errno2str(error))
-        } else if (error == ECONNRESET || error == ENOTCONN || error == EPIPE) {
-            SOCKET_ERROR(SocketError::BrokenPipe, "Could not send on socket: "+errno2str(error))
-        } else if (error == EDESTADDRREQ || error == EISCONN || error == EPIPE) {
-            SOCKET_ERROR(SocketError::Configuration, "Could not send on socket: "+errno2str(error))
+        } else if (error == SOCKET_ERRNO_EACCES) {
+            SOSIMPLE_SOCKET_ERROR(SocketError::Permission, "Could not send on socket: "+errno2str(error))
+        } else if (error == SOCKET_ERRNO_ENOBUFS || error == SOCKET_ERRNO_ENOMEM || error == SOCKET_ERRNO_EMSGSIZE) {
+            SOSIMPLE_SOCKET_ERROR(SocketError::NoMemory, "Could not send on socket: "+errno2str(error))
+        } else if (error == SOCKET_ERRNO_ECONNRESET || error == SOCKET_ERRNO_ENOTCONN || error == SOCKET_ERRNO_EPIPE) {
+            SOSIMPLE_SOCKET_ERROR(SocketError::BrokenPipe, "Could not send on socket: "+errno2str(error))
+        } else if (error == SOCKET_ERRNO_EDESTADDRREQ || error == SOCKET_ERRNO_EISCONN || error == SOCKET_ERRNO_EPIPE) {
+            SOSIMPLE_SOCKET_ERROR(SocketError::Configuration, "Could not send on socket: "+errno2str(error))
         } else {
-            SOCKET_ERROR(SocketError::Generic, "Could not send on socket: "+errno2str(error))
+            SOSIMPLE_SOCKET_ERROR(SocketError::Generic, "Could not send on socket: "+errno2str(error))
         }
     }
 }

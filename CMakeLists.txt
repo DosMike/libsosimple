@@ -21,12 +21,16 @@ set(lib_public_headers
     include/sosimple.hpp
     include/sosimple/endpoint.hpp
     include/sosimple/exports.hpp
-    include/sosimple/netheaders.hpp
+    include/sosimple/platforms.hpp
     include/sosimple/pending.hpp
     include/sosimple/socket.hpp
     include/sosimple/utilities.hpp
     include/sosimple/worker.hpp
     )
+if(WIN32)
+    list(APPEND lib_src_files src/windows_compat.cpp)
+    list(APPEND lib_public_headers include/sosimple/windows_compat.hpp)
+endif()
 
 if(BUILD_SHARED_LIBS)
     add_library(${PROJECT_NAME} SHARED ${lib_src_files})
@@ -38,6 +42,11 @@ else()
     add_library(${PROJECT_NAME} STATIC ${lib_src_files})
     set(THIS_OUTPUT_NAME ${PROJECT_NAME}-static)
 endif()
+
+if(WIN32)
+    target_link_libraries(${PROJECT_NAME} PUBLIC Ws2_32)
+endif()
+
 set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME ${THIS_OUTPUT_NAME})
 set_target_properties(${PROJECT_NAME} PROPERTIES VERSION ${PROJECT_VERSION})
 set_target_properties(${PROJECT_NAME} PROPERTIES SOVERSION ${PROJECT_VERSION_MAJOR})
@@ -51,8 +60,10 @@ install(TARGETS ${PROJECT_NAME}
         FILE_SET HEADERS DESTINATION ${CMAKE_INSTALL_INCLUDEDIR} COMPONENT Development
         )
 
-configure_file(${PROJECT_NAME}.pc.in ${PROJECT_NAME}.pc @ONLY)
-install(FILES ${CMAKE_BINARY_DIR}/${PROJECT_NAME}.pc DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/pkgconfig)
+if(UNIX)
+    configure_file(${PROJECT_NAME}.pc.in ${PROJECT_NAME}.pc @ONLY)
+    install(FILES ${CMAKE_BINARY_DIR}/${PROJECT_NAME}.pc DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/pkgconfig)
+endif()
 
 # example to test
 

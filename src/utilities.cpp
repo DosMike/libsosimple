@@ -1,8 +1,11 @@
 #include <sosimple.hpp>
+#include "platforms_internal.hpp"
 
 auto sosimple::utility::ip::listInterfaces() -> std::set<std::string>
 {
     std::set<std::string> result;
+
+#if defined __linux__
 
     struct ifaddrs *addrs;
     getifaddrs(&addrs);
@@ -14,6 +17,16 @@ auto sosimple::utility::ip::listInterfaces() -> std::set<std::string>
     }
 
     freeifaddrs(addrs);
+
+#elif defined _WIN32
+
+    SOSIMPLE_SOCKET_INIT;
+
+#else
+
+    #error Unsupported platform
+
+#endif
     return result;
 }
 
@@ -47,6 +60,9 @@ auto sosimple::utility::ip::fromString(const std::string& name) -> std::string
 
     char host[NI_MAXHOST]={};
     bool resolved{false};
+
+#if defined __linux__
+
     struct ifaddrs *addrs;
     getifaddrs(&addrs);
 
@@ -65,6 +81,17 @@ auto sosimple::utility::ip::fromString(const std::string& name) -> std::string
     }
 
     freeifaddrs(addrs);
+
+#elif defined _WIN32
+
+    SOSIMPLE_SOCKET_INIT;
+
+#else
+
+    #error Unsupported platform
+
+#endif
+
     if (!resolved)
         throw std::runtime_error("Failed to resolve address: not an address and no interface with that name");
     return host;
