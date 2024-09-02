@@ -357,7 +357,14 @@ sosimple::SocketBase::setTimeout(std::chrono::milliseconds timeout) -> void
     if (timeout == std::chrono::microseconds::zero()) {
         mWatchDog.setCallback({}); //ignore timeouts
     } else {
-        mWatchDog.setCallback([this](){ SOSIMPLE_SOCKET_ERROR(SocketError::Timeout, "Socket watchdog tripped: Timeout") });
+        mWatchDog.setCallback([wself=weak_from_this()](){
+            auto self = wself.lock();
+            if (self) {
+                self->mFlags |= 2;
+                POSIX_CLOSE(self->mFD);
+                self->notifySocketError(socket_error((SocketError::Timeout), ("Socket watchdog tripped: Timeout")));
+            }
+        });
     }
 }
 
@@ -404,14 +411,18 @@ sosimple::SocketBase::~SocketBase()
 
 sosimple::ListenSocketImpl::~ListenSocketImpl()
 {
-    mRunning = false;
-    mWorker.join();
+    mRunning.store(false);
+    if (mWorker.joinable())
+        mWorker.join();
 }
 
 auto
 sosimple::ListenSocketImpl::start() -> void
 {
-    mWorker = std::thread([this](){threadMain();});
+    mWorker = std::thread([wself=weak_from_this()](){
+        auto self = std::static_pointer_cast<ListenSocketImpl>(wself.lock());
+        if (self) self->threadMain();
+    });
 }
 
 auto
@@ -475,7 +486,7 @@ sosimple::ListenSocketImpl::onAccept(AcceptCallback callback) -> void
 
 sosimple::ComSocketImpl::~ComSocketImpl()
 {
-    mRunning = false;
+    mRunning.store(false);
     if (mWorker.joinable())
         mWorker.join();
 }
@@ -483,7 +494,10 @@ sosimple::ComSocketImpl::~ComSocketImpl()
 auto
 sosimple::ComSocketImpl::start() -> void
 {
-    mWorker = std::thread([this](){threadMain();});
+    mWorker = std::thread([wself=weak_from_this()](){
+        auto self = std::static_pointer_cast<ComSocketImpl>(wself.lock());
+        if (self) self->threadMain();
+    });
 }
 
 auto
