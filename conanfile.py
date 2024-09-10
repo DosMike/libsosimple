@@ -4,7 +4,7 @@ from conan.tools.cmake import CMakeToolchain, CMake, cmake_layout, CMakeDeps
 
 class libsosimpleRecipe(ConanFile):
     name = "sosimple"
-    version = "1.0"
+    version = "1.1.0"
 
     # Optional metadata
     license = "MIT License"
