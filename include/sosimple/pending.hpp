@@ -105,6 +105,14 @@ public:
         return mWaiter.wait_until<Rep,Period>(lock, time);
     }
 
+    /** this will unblock all threads waiting on this pending.
+     * this is intended to be used in case a precondition fails and the pending can't return a value
+     */
+    inline auto notify() -> void
+    {
+        mWaiter.notify_all();
+    }
+
 };
 
 }

@@ -7,10 +7,13 @@
 
 #define fun auto
 
+std::string lastReceivedString;
+
 fun
 onPacketReceived(const std::vector<uint8_t>& packet, sosimple::Endpoint remote) -> void
 {
     std::cout << "Received " << packet.size() << " bytes from " << remote << "\n";
+    lastReceivedString = std::string{packet.begin(), packet.end()};
 }
 fun
 onConnectionError(sosimple::socket_error error) -> void
@@ -46,6 +49,7 @@ udp_test() -> void
         sosimple::Worker::stop();
         worker.join();
     }};
+    lastReceivedString = "";
 
     std::cout << " Creating sockets" << std::endl;
     auto chan1 = sosimple::createUDPUnicast({"lo", 5000});
@@ -60,6 +64,10 @@ udp_test() -> void
     chan2->send(payload, chan1->getLocalEndpoint());
 
     std::this_thread::sleep_for(std::chrono::seconds(1));
+    if (lastReceivedString == msg)
+        std::cout << "SUCCESS\n";
+    else
+        std::cout << "FAILED\n";
 }
 
 fun
@@ -71,6 +79,7 @@ tcp_test() -> void
         sosimple::Worker::stop();
         worker.join();
     }};
+    lastReceivedString = "";
 
     std::cout << " Creating sockets" << std::endl;
     auto sockListen = sosimple::createTCPListen({"lo", 5100});
@@ -101,6 +110,10 @@ tcp_test() -> void
     sockClient->send(payload, {});
 
     std::this_thread::sleep_for(std::chrono::seconds(1));
+    if (lastReceivedString == msg)
+        std::cout << "SUCCESS\n";
+    else
+        std::cout << "FAILED\n";
 }
 
 fun

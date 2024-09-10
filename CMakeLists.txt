@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(sosimple VERSION 1.0 DESCRIPTION "Easy to use socket library" LANGUAGES CXX)
+project(sosimple VERSION 1.1.0 DESCRIPTION "Easy to use socket library" LANGUAGES CXX)
 
 # defaults
 
@@ -13,6 +13,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(lib_src_files
     src/socket_impl.cpp
+    src/socket_poller.cpp
     src/endpoint.cpp
     src/utilities.cpp
     src/worker_impl.cpp

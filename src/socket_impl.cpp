@@ -3,6 +3,7 @@
 #include <sosimple/platforms.hpp>
 
 #include "socket_impl.hpp"
+#include "socket_poller.hpp"
 #include "platforms_internal.hpp"
 
 #define SC_DEFAULT_BUFFER_SIZE 4096
@@ -388,7 +389,7 @@ sosimple::SocketBase::pollFD(int pollval, unsigned timeoutMS, bool notifyOnTimeo
     pollfd pollreq{};
     pollreq.fd = mFD;
     pollreq.events = pollval;
-    int result = POSIX_POLL(&pollreq, 1, timeoutMS); // 10 second timeout
+    int result = POSIX_POLL(&pollreq, 1, timeoutMS);
     int error = POSIX_ERRNO;
     if (result > 0) {
         if ((pollreq.revents & pollerror) != 0) {
@@ -411,24 +412,20 @@ sosimple::SocketBase::~SocketBase()
 
 sosimple::ListenSocketImpl::~ListenSocketImpl()
 {
-    mRunning.store(false);
-    if (mWorker.joinable())
-        mWorker.join();
+    SocketPoller::get() -= mFD;
 }
 
 auto
 sosimple::ListenSocketImpl::start() -> void
 {
-    mWorker = std::thread([wself=weak_from_this()](){
-        auto self = std::static_pointer_cast<ListenSocketImpl>(wself.lock());
-        if (self) self->threadMain();
-    });
+    SocketPoller::get() += shared_from_this();
 }
 
 auto
-sosimple::ListenSocketImpl::threadMain() -> void
+sosimple::ListenSocketImpl::accept() -> bool
 {
-    while (mRunning && (mFlags & SC_SOCKFLAG_CLOSED)==0) {
+    bool acceptedSome{false};
+    while ((mFlags & SC_SOCKFLAG_CLOSED)==0) {
         sockaddr_storage addr{};
         socklen_t addrSz = sizeof(addr);
         socket_t fd = POSIX_ACCEPT(mFD, (sockaddr*)&addr, &addrSz);
@@ -436,32 +433,34 @@ sosimple::ListenSocketImpl::threadMain() -> void
 
         if (!POSIX_ISVALIDDESCRIPTOR(fd)) {
             if (error == SOCKET_ERRNO_EAGAIN || error == SOCKET_ERRNO_EWOULDBLOCK) {
-                // nothin polled within a ms and the watchdog trips? -> timeout!
-                if (!pollFD(POLLIN, 1, false) && !mWatchDog.check()) mRunning = false;
+                break;
             } else if (error == SOCKET_ERRNO_ECONNABORTED) {
                 continue; // "a connection?"
             } else if (error == SOCKET_ERRNO_ENOBUFS || error == SOCKET_ERRNO_ENOMEM) {
-                mRunning = false;
                 SOSIMPLE_SOCKET_ERROR(SocketError::NoMemory, "Could not accept connection: "+errno2str(error))
             } else if (error == SOCKET_ERRNO_EMFILE || error == SOCKET_ERRNO_ENFILE) {
-                mRunning = false;
                 SOSIMPLE_SOCKET_ERROR(SocketError::HandleLimit, "Could not accept connection: "+errno2str(error))
             } else if (error == SOCKET_ERRNO_EINTR) {
-                mRunning = false;
                 SOSIMPLE_SOCKET_ERROR(SocketError::BrokenPipe, "Could not accept connection: "+errno2str(error))
             } else {
-                mRunning = false;
                 SOSIMPLE_SOCKET_ERROR(SocketError::Generic, "Could not accept connection: "+errno2str(error))
             }
         } else if (!unblockSocket(fd)) {
-            mRunning = false;
             POSIX_CLOSE(fd);
             SOSIMPLE_SOCKET_ERROR(SocketError::Generic, "Could not unblock accepted socket");
         } else {
             mWatchDog.reset();
             notifyAccept(fd, Endpoint{(sockaddr*)&addr, addrSz});
+            acceptedSome = true;
         }
     }
+    return acceptedSome;
+}
+
+auto
+sosimple::ListenSocketImpl::checkWatchdog() -> void
+{
+    mWatchDog.check();
 }
 
 auto
@@ -486,27 +485,22 @@ sosimple::ListenSocketImpl::onAccept(AcceptCallback callback) -> void
 
 sosimple::ComSocketImpl::~ComSocketImpl()
 {
-    mRunning.store(false);
-    if (mWorker.joinable())
-        mWorker.join();
+    SocketPoller::get() -= mFD;
 }
 
 auto
 sosimple::ComSocketImpl::start() -> void
 {
-    mWorker = std::thread([wself=weak_from_this()](){
-        auto self = std::static_pointer_cast<ComSocketImpl>(wself.lock());
-        if (self) self->threadMain();
-    });
+    SocketPoller::get() += shared_from_this();
 }
 
 auto
-sosimple::ComSocketImpl::threadMain() -> void
+sosimple::ComSocketImpl::read() -> bool
 {
     uint8_t chunk[4096];
     const bool connected = (mFlags & SC_SOCKFLAG_CONNECTED) != 0;
-    pollFD(POLLOUT, 2000, false); // wait for the connection (avoid early ENOTCONN)
-    while (mRunning && (mFlags & SC_SOCKFLAG_CLOSED)==0) {
+    bool readSomething{false};
+    while ((mFlags & SC_SOCKFLAG_CLOSED)==0) {
         int read;
         Endpoint from;
         sockaddr_storage addr{};
@@ -519,16 +513,12 @@ sosimple::ComSocketImpl::threadMain() -> void
         int error = POSIX_ERRNO;
         if (read == -1) {
             if (error == SOCKET_ERRNO_EAGAIN || error == SOCKET_ERRNO_EWOULDBLOCK) {
-                // nothin polled within a ms and the watchdog trips? -> timeout!
-                if (!pollFD(POLLIN, 1, false) && !mWatchDog.check()) mRunning = false;
+                break; // we've read everything available for now
             } else if (error == SOCKET_ERRNO_ENOMEM) {
-                mRunning = false;
                 SOSIMPLE_SOCKET_ERROR(SocketError::NoMemory, "Could not read socket: "+errno2str(error))
             } else if (error == SOCKET_ERRNO_EINTR || error == SOCKET_ERRNO_ECONNREFUSED || error == SOCKET_ERRNO_ENOTCONN) {
-                mRunning = false;
                 SOSIMPLE_SOCKET_ERROR(SocketError::BrokenPipe, "Could not read socket: "+errno2str(error))
             } else {
-                mRunning = false;
                 SOSIMPLE_SOCKET_ERROR(SocketError::Generic, "Could not read socket: "+errno2str(error))
             }
         } else if (read>0) {
@@ -538,8 +528,15 @@ sosimple::ComSocketImpl::threadMain() -> void
                 from = Endpoint{(sockaddr*)&addr, addrSz};
             mWatchDog.reset();
             notifyPacket(std::vector<uint8_t>(chunk+0, chunk+read), from);
+            readSomething = true;
         }
     }
+    return readSomething;
+}
+auto
+sosimple::ComSocketImpl::checkWatchdog() -> void
+{
+    mWatchDog.check();
 }
 
 auto

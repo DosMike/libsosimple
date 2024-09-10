@@ -4,6 +4,8 @@
 #include "watchdog.hpp"
 #include <sosimple/socket.hpp>
 #include <memory>
+#include <atomic>
+#include <thread>
 
 namespace sosimple {
 
@@ -61,10 +63,6 @@ public:
 class ListenSocketImpl : public SocketBase, public ListenSocket {
     AcceptCallback mAcceptEvent;
 
-    std::atomic_bool mRunning{true};
-    void threadMain();
-    std::thread mWorker{};
-
 public:
     ListenSocketImpl() = default;
     explicit ListenSocketImpl(socket_t fd) : SocketBase(fd, Kind::TCP_Listen), ListenSocket() {
@@ -73,6 +71,7 @@ public:
 
     ~ListenSocketImpl() override;
 
+    // Note: delayed init for shared_from_this
     auto
     start() -> void;
 
@@ -100,20 +99,28 @@ public:
     getLocalEndpoint() const -> Endpoint override
     { return SocketBase::getLocalEndpoint(); }
 
+// ----- for io -----
+
     auto
     notifyAccept(socket_t acceptedSocket, Endpoint remote) -> void;
 
     auto
     onAccept(AcceptCallback callback) -> void override;
 
+// ----- for polling -----
+
+    /// accept connections in the queue
+    /// @return true if at least one connection was accepted
+    auto
+    accept() -> bool;
+
+    auto
+    checkWatchdog() -> void;
+
 };
 
 class ComSocketImpl : public SocketBase, public ComSocket {
     PacketReceivedCallback mPacketReceivedEvent;
-
-    std::atomic_bool mRunning{true};
-    void threadMain();
-    std::thread mWorker{};
 
 public:
     ComSocketImpl() = default;
@@ -121,6 +128,7 @@ public:
 
     ~ComSocketImpl() override;
 
+    // Note: delayed init for shared_from_this
     auto
     start() -> void;
 
@@ -151,6 +159,8 @@ public:
     auto
     getRemoteEndpoint() const -> Endpoint override;
 
+// ----- for io -----
+
     auto
     notifyPacket(const std::vector<uint8_t>& payload, Endpoint remote) -> void;
 
@@ -159,6 +169,16 @@ public:
 
     auto
     send(const std::vector<uint8_t>& payload, Endpoint remote) const -> void override;
+
+// ----- for polling -----
+
+    /// read one packet of how-ever-many-available-bytes
+    /// @return true if at least 1 byte was read, false if no data available or error
+    auto
+    read() -> bool;
+
+    auto
+    checkWatchdog() -> void;
 };
 
 }
