@@ -398,6 +398,7 @@ sosimple::SocketBase::pollFD(int pollval, unsigned timeoutMS, bool notifyOnTimeo
         }
         else return true;
     } else if (result == 0) {
+        if (error == SOCKET_ERRNO_EINPROGRESS) return true; // this is fine
         if (notifyOnTimeout) SOSIMPLE_SOCKET_ERROR(SocketError::Timeout, "Unable to poll connection: "+errno2str(error))
     }
     else if (error == SOCKET_ERRNO_ENOMEM) SOSIMPLE_SOCKET_ERROR(SocketError::NoMemory, "Unable to poll connection: "+errno2str(error))
@@ -432,7 +433,7 @@ sosimple::ListenSocketImpl::accept() -> bool
         int error = POSIX_ERRNO;
 
         if (!POSIX_ISVALIDDESCRIPTOR(fd)) {
-            if (error == SOCKET_ERRNO_EAGAIN || error == SOCKET_ERRNO_EWOULDBLOCK) {
+            if (error == SOCKET_ERRNO_EAGAIN || error == SOCKET_ERRNO_EWOULDBLOCK || error == SOCKET_ERRNO_EINPROGRESS) {
                 break;
             } else if (error == SOCKET_ERRNO_ECONNABORTED) {
                 continue; // "a connection?"
